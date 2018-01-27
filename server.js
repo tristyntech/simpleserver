@@ -1,100 +1,112 @@
-var express = require('express')
-var app = express()
-var http = require('http');
-const path = require('path');
+//  OpenShift sample Node application
+var express = require('express'),
+    app     = express(),
+    morgan  = require('morgan');
 
-var cors = require('cors')
-app.use(cors())
+Object.assign=require('object-assign')
 
-var bodyParser = require('body-parser')
-app.use(bodyParser.json())
-
-var mongoose = require('mongoose')
+app.engine('html', require('ejs').renderFile);
+app.use(morgan('combined'))
 
 var port = process.env.PORT || process.env.OPENSHIFT_NODEJS_PORT || 8080,
     ip   = process.env.IP   || process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0',
+    mongoURL = process.env.OPENSHIFT_MONGODB_DB_URL || process.env.MONGO_URL,
+    mongoURLLabel = "";
 
-mongoose.connect('mongodb://tristyntech:password@ds135547.mlab.com:35547/blogtestdb')
-var todoSchema = new mongoose.Schema({
-  text: String,
-  done: Boolean
-})
+if (mongoURL == null && process.env.DATABASE_SERVICE_NAME) {
+  var mongoServiceName = process.env.DATABASE_SERVICE_NAME.toUpperCase(),
+      mongoHost = process.env[mongoServiceName + '_SERVICE_HOST'],
+      mongoPort = process.env[mongoServiceName + '_SERVICE_PORT'],
+      mongoDatabase = process.env[mongoServiceName + '_DATABASE'],
+      mongoPassword = process.env[mongoServiceName + '_PASSWORD']
+      mongoUser = process.env[mongoServiceName + '_USER'];
 
-app.get('/test', function (req, res) {
-  res.sendFile(path.join(__dirname + '/server.js'));
+  if (mongoHost && mongoPort && mongoDatabase) {
+    mongoURLLabel = mongoURL = 'mongodb://';
+    if (mongoUser && mongoPassword) {
+      mongoURL += mongoUser + ':' + mongoPassword + '@';
+    }
+    // Provide UI label that excludes user id and pw
+    mongoURLLabel += mongoHost + ':' + mongoPort + '/' + mongoDatabase;
+    mongoURL += mongoHost + ':' +  mongoPort + '/' + mongoDatabase;
+
+  }
+}
+var db = null,
+    dbDetails = new Object();
+
+var initDb = function(callback) {
+  if (mongoURL == null) return;
+
+  var mongodb = require('mongodb');
+  if (mongodb == null) return;
+
+  mongodb.connect(mongoURL, function(err, conn) {
+    if (err) {
+      callback(err);
+      return;
+    }
+
+    db = conn;
+    dbDetails.databaseName = db.databaseName;
+    dbDetails.url = mongoURLLabel;
+    dbDetails.type = 'MongoDB';
+
+    console.log('Connected to MongoDB at: %s', mongoURL);
+  });
+};
+
+app.get('/', function (req, res) {
+  // try to initialize the db on every request if it's not already
+  // initialized.
+  if (!db) {
+    initDb(function(err){});
+  }
+  if (db) {
+    var col = db.collection('counts');
+    // Create a document with request IP and current time of request
+    col.insert({ip: req.ip, date: Date.now()});
+    col.count(function(err, count){
+      if (err) {
+        console.log('Error running count. Message:\n'+err);
+      }
+      res.render('index.html', { pageCountMessage : count, dbInfo: dbDetails });
+    });
+  } else {
+    res.render('index.html', { pageCountMessage : null});
+  }
 });
 
-var blogPostSchema = new mongoose.Schema({
-  image: String,
-  title: String,
-  headline: String,
-  body: String,
-  author: String,
+app.get('/test', (req, res)=>{
+  res.send('winner')
 })
 
-var Blog = mongoose.model('Blog', blogPostSchema)
-var Todo = mongoose.model('Todo', todoSchema)
-
-
-app.post('/addBlog', (req, res) => {
-  var title = req.body.title
-  var body = req.body.body
-  var image = req.body.image
-  var headline = req.body.headline
-
-  console.log('#################working')
-  var newPost = new Blog({
-    title: title,
-    body: body,
-    image: image,
-    headline: headline,
-    author: "Geoff Dennis"
-  })
-  console.log('newPost', newPost)
-  newPost.save()
-  .then((resp) => {
-    res.send(resp)
-  })
-})
-
-app.post('/todos/:text', (req, res) => {
-  var t = req.params.text
-//pop
-  var newTodo = new Todo({
-    text: t,
-    done: false
-  })
-
-  newTodo.save()
-  .then((res)=>{
-      res.json(res)
-  })
-})
-
-
-app.get('/getBlogs', (req, res) =>{
-  Blog.find({})
-  .then((resp) => {
-    res.json(resp);
-  })
-})
-
-app.get('/lulu', (req, res)=> {
-  Blog.find({})
-  .then((todo)=>{
-    res.json(todo)
-  })
-})
-
-app.post("/login", (req, res) => {
-  var username = req.body.username;
-  var password = req.body.password
-  if (username === 'theg@gdennis.com' && password==='password') {
-    res.json('success')
-  } else {
-    res.json('fail')
+app.get('/pagecount', function (req, res) {
+  // try to initialize the db on every request if it's not already
+  // initialized.
+  if (!db) {
+    initDb(function(err){});
   }
-})
+  if (db) {
+    db.collection('counts').count(function(err, count ){
+      res.send('{ pageCount: ' + count + '}');
+    });
+  } else {
+    res.send('{ pageCount: -1 }');
+  }
+});
+
+// error handling
+app.use(function(err, req, res, next){
+  console.error(err.stack);
+  res.status(500).send('Something bad happened!');
+});
+
+initDb(function(err){
+  console.log('Error connecting to Mongo. Message:\n'+err);
+});
 
 app.listen(port, ip);
 console.log('Server running on http://%s:%s', ip, port);
+
+module.exports = app ;
